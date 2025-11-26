@@ -14,31 +14,16 @@
 from __future__ import annotations
 
 import operator
-import warnings
-from dataclasses import asdict
-from enum import Enum
+from contextlib import contextmanager
+from functools import partial
 from typing import Optional
 
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from peft.import_utils import is_bnb_4bit_available, is_bnb_available
-from peft.tuners.tuners_utils import (
-    BaseTuner,
-    BaseTunerLayer,
-    check_target_module_exists,
-    onload_layer,
-    replicate_layers,
-)
-from peft.utils import (
-    AuxiliaryTrainingWrapper,
-    ModulesToSaveWrapper,
-    _freeze_adapter,
-    _get_submodules,
-    _set_adapter,
-    get_quantization_config,
-)
+from peft.tuners.tuners_utils import BaseTuner, BaseTunerLayer, replicate_layers
+from peft.utils import AuxiliaryTrainingWrapper
 from peft.utils.other import get_pattern_key
 
 from ...utils.constants import TRANSFORMERS_MODELS_TO_HIRA_TARGET_MODULES_MAPPING
@@ -123,27 +108,8 @@ class HiraModel(BaseTuner):
     """
 
     prefix: str = "hira_"
-
-    def __init__(
-        self,
-        model,
-        config,
-        adapter_name,
-        low_cpu_mem_usage: bool = False,
-        state_dict: Optional[dict[str, torch.Tensor]] = None,
-    ) -> None:
-        super().__init__(
-            model,
-            config,
-            adapter_name,
-            low_cpu_mem_usage=low_cpu_mem_usage,
-            state_dict=state_dict,
-        )
-
-
-    @staticmethod
-    def _check_target_module_exists(hira_config, key):
-        return check_target_module_exists(hira_config, key)
+    tuner_layer_cls = HiraLayer
+    target_module_mapping = TRANSFORMERS_MODELS_TO_HIRA_TARGET_MODULES_MAPPING
 
     def _prepare_model(self, peft_config: HiraConfig, model: nn.Module):
         r"""
@@ -166,7 +132,9 @@ class HiraModel(BaseTuner):
         target_name,
         parent,
         current_key,
-    ):
+        *,
+        parameter_name: Optional[str] = None,
+    ) -> None:
         if current_key is None:
             raise ValueError("Current Key shouldn't be `None`")
 
@@ -181,6 +149,7 @@ class HiraModel(BaseTuner):
             "init_weights": hira_config.init_weights,
             "loaded_in_8bit": getattr(self.model, "is_loaded_in_8bit", False),
             "loaded_in_4bit": getattr(self.model, "is_loaded_in_4bit", False),
+            "parameter_name": parameter_name,
         }
         # for torchao merging, we need the get_apply_tensor_subclass from the quantization config
         try:
@@ -231,13 +200,6 @@ class HiraModel(BaseTuner):
                 if not any(p.device == meta for p in module.parameters()):
                     module.to(weight.device)
 
-    def _mark_only_adapters_as_trainable(self, model: nn.Module) -> None:
-        for n, p in model.named_parameters():
-            if self.prefix not in n:
-                p.requires_grad = False
-
-        # No bias for HiRA, skipping
-
     @staticmethod
     def _create_new_module(hira_config: HiraConfig, adapter_name, target, **kwargs):
         # Collect dispatcher functions to decide what backend to use for the replaced HiRA layer. The order matters,
@@ -274,7 +236,6 @@ class HiraModel(BaseTuner):
             from .bnb import dispatch_bnb_4bit
 
             dispatchers.append(dispatch_bnb_4bit)
-        # TODO: Needs check here
         dispatchers.extend(
             [
                 dispatch_default,
@@ -297,70 +258,68 @@ class HiraModel(BaseTuner):
 
         return new_module
 
-    def __getattr__(self, name: str):
-        """Forward missing attributes to the wrapped module."""
+    @contextmanager
+    def _enable_peft_forward_hooks(self, *args, **kwargs):
+        # If adapter_names is passed as an argument, we inject it into the forward arguments.
+        adapter_names = kwargs.pop("adapter_names", None)
+
+        if adapter_names is None:
+            # nothing to do
+            yield
+            return
+
+        if self.training:
+            raise ValueError("Cannot pass `adapter_names` when the model is in training mode.")
+
+        # Check that users only passed actually existing adapters.
+        # Note: We cannot do this on the layer level, as each individual layer may not have each adapter. Still, we want
+        # to check that there is at least one layer with the given name, or else something like typos can easily slip.
+        expected_adapters = set()
+        for layer in self.modules():
+            if isinstance(layer, HiraLayer):
+                expected_adapters |= layer.hira_A.keys()
+                expected_adapters |= layer.hira_embedding_A.keys()
+        unique_adapters = {name for name in adapter_names if name != "__base__"}
+        unexpected_adapters = unique_adapters - expected_adapters
+        if unexpected_adapters:
+            raise ValueError(f"Trying to infer with non-existing adapter(s): {', '.join(sorted(unexpected_adapters))}")
+
+        hook_handles = []
+        num_beams = kwargs.get("num_beams", None)
+        uses_beam_search = isinstance(num_beams, int) and (num_beams > 1)
+
+        # deal with beam search
+        original_adapter_names = adapter_names[:]
+        if uses_beam_search:
+            if not isinstance(adapter_names, (list, tuple)):
+                raise TypeError(f"Got adapter names of type {type(adapter_names)}, expected a list of str.")
+            # When there is beam search, the inputs are repeated n times, thus we repeat each adapter name n times and
+            # then flatten the nested list. For encoder-decoder models, this extended list should not be applied to the
+            # encoder part. Further below, the original argument is thus restored for the encoder.
+            adapter_names = sum(([n] * kwargs["num_beams"] for n in adapter_names), [])
+
+        for module in self.modules():
+            if isinstance(module, HiraLayer) or isinstance(module, AuxiliaryTrainingWrapper):
+                pre_forward = partial(_adapter_names_pre_forward_hook, adapter_names=adapter_names)
+                handle = module.register_forward_pre_hook(pre_forward, with_kwargs=True)
+                hook_handles.append(handle)
+
+        if uses_beam_search and hasattr(self.model, "get_encoder"):
+            # For encoder-decoder models, even when applying beam search, the encoder part of the model should not use
+            # the extended adapter_names. This is because the encoder still uses the original, non-extended samples.
+            for module in self.model.get_encoder().modules():
+                if isinstance(module, HiraLayer) or isinstance(module, AuxiliaryTrainingWrapper):
+                    # Add another hook to overwrite the kwargs with the original adapter names -- this is easier than
+                    # trying to exclude the encoder.
+                    pre_forward = partial(_adapter_names_pre_forward_hook, adapter_names=original_adapter_names)
+                    handle = module.register_forward_pre_hook(pre_forward, with_kwargs=True)
+                    hook_handles.append(handle)
+
         try:
-            return super().__getattr__(name)  # defer to nn.Module's logic
-        except AttributeError:
-            if name == "model":  # see #1892: prevent infinite recursion if class is not initialized
-                raise
-            return getattr(self.model, name)
-
-    def get_peft_config_as_dict(self, inference: bool = False):
-        config_dict = {}
-        for key, value in self.peft_config.items():
-            config = {k: v.value if isinstance(v, Enum) else v for k, v in asdict(value).items()}
-            if inference:
-                config["inference_mode"] = True
-        config_dict[key] = config
-        return config
-
-    def _set_adapter_layers(self, enabled: bool = True) -> None:
-        for module in self.model.modules():
-            if isinstance(module, (BaseTunerLayer, AuxiliaryTrainingWrapper)):
-                module.enable_adapters(enabled)
-
-    def enable_adapter_layers(self) -> None:
-        """Enable all adapters.
-
-        Call this if you have previously disabled all adapters and want to re-enable them.
-        """
-        self._set_adapter_layers(enabled=True)
-
-    def disable_adapter_layers(self) -> None:
-        """Disable all adapters.
-
-        When disabling all adapters, the model output corresponds to the output of the base model.
-        """
-        self._set_adapter_layers(enabled=False)
-
-    def set_adapter(self, adapter_name: str | list[str], inference_mode: bool = False) -> None:
-
-        """Set the active adapter(s).
-
-        Additionally, this function will set the specified adapters to trainable (i.e., requires_grad=True). If this is
-        not desired, use the following code.
-
-        ```py
-        >>> for name, param in model_peft.named_parameters():
-        ...     if ...:  # some check on name (ex. if 'lora' in name)
-        ...         param.requires_grad = False
-        ```
-
-        Args:
-            adapter_name (`str` or `list[str]`): Name of the adapter(s) to be activated.
-            inference_mode (`bool`, *optional*, defaults to `False`): Whether the activated adapter should require
-                gradients.
-        """
-        _set_adapter(self.model, adapter_name, inference_mode=inference_mode)
-
-        for module in self.model.modules():
-            if isinstance(module, HiraLayer):
-                if module.merged:
-                    warnings.warn("Adapter cannot be set when the model is merged. Unmerging the model first.")
-                    module.unmerge()
-                module.set_adapter(adapter_name, inference_mode=inference_mode)
-        self.active_adapter = adapter_name
+            yield
+        finally:
+            for handle in hook_handles:
+                handle.remove()
 
     def _check_merge_allowed(self):
         """Verify that the configuration supports merging.
@@ -373,99 +332,10 @@ class HiraModel(BaseTuner):
         if self.peft_config.get("layer_replication"):
             raise ValueError("Cannot merge HiRA layers when base model layers are replicated")
 
-    @staticmethod
-    def _prepare_adapter_config(peft_config, model_config):
+    def _prepare_adapter_config(self, peft_config, model_config):
         if peft_config.target_modules is None:
-            if model_config["model_type"] not in TRANSFORMERS_MODELS_TO_HIRA_TARGET_MODULES_MAPPING:
+            if model_config["model_type"] in self.target_module_mapping:
+                peft_config.target_modules = set(self.target_module_mapping[model_config["model_type"]])
+            else:
                 raise ValueError("Please specify `target_modules` in `peft_config`")
-            peft_config.target_modules = set(
-                TRANSFORMERS_MODELS_TO_HIRA_TARGET_MODULES_MAPPING[model_config["model_type"]]
-            )
         return peft_config
-
-    def _unload_and_optionally_merge(
-        self,
-        merge=True,
-        progressbar: bool = False,
-        safe_merge: bool = False,
-        adapter_names: Optional[list[str]] = None,
-    ):
-        if merge:
-            self._check_merge_allowed()
-
-        key_list = [key for key, _ in self.model.named_modules() if self.prefix not in key]
-        desc = "Unloading " + ("and merging " if merge else "") + "model"
-        for key in tqdm(key_list, disable=not progressbar, desc=desc):
-            try:
-                parent, target, target_name = _get_submodules(self.model, key)
-            except AttributeError:
-                continue
-            with onload_layer(target):
-                if hasattr(target, "base_layer"):
-                    if merge:
-                        target.merge(safe_merge=safe_merge, adapter_names=adapter_names)
-                    self._replace_module(parent, target_name, target.get_base_layer(), target)
-
-        return self.model
-
-    def delete_adapter(self, adapter_name: str) -> None:
-        """
-        Deletes an existing adapter.
-
-        Args:
-            adapter_name (str): Name of the adapter to be deleted.
-        """
-        if adapter_name not in list(self.peft_config.keys()):
-            raise ValueError(f"Adapter {adapter_name} does not exist")
-        del self.peft_config[adapter_name]
-
-        key_list = [key for key, _ in self.model.named_modules() if self.prefix not in key]
-        new_adapter = None
-        for key in key_list:
-            _, target, _ = _get_submodules(self.model, key)
-            if isinstance(target, HiraLayer):
-                target.delete_adapter(adapter_name)
-                if new_adapter is None:
-                    new_adapter = target.active_adapters[:]
-
-        self.active_adapter = new_adapter or []
-        self._delete_auxiliary_adapter(adapter_name, new_active_adapters=new_adapter)
-
-    def merge_and_unload(
-        self, progressbar: bool = False, safe_merge: bool = False, adapter_names: Optional[list[str]] = None
-    ) -> torch.nn.Module:
-        r"""
-        This method merges the HiRA layers into the base model. This is needed if someone wants to use the base model
-        as a standalone model.
-
-        Args:
-            progressbar (`bool`):
-                whether to show a progressbar indicating the unload and merge process
-            safe_merge (`bool`):
-                whether to activate the safe merging check to check if there is any potential Nan in the adapter
-                weights
-            adapter_names (`List[str]`, *optional*):
-                The list of adapter names that should be merged. If None, all active adapters will be merged. Defaults
-                to `None`.
-        Example:
-
-        ```py
-        >>> from transformers import AutoModelForCausalLM
-        >>> from peft import PeftModel
-
-        >>> base_model = AutoModelForCausalLM.from_pretrained("tiiuae/falcon-40b")
-        >>> peft_model_id = "smangrul/falcon-40B-int4-peft-hira-sfttrainer-sample"
-        >>> model = PeftModel.from_pretrained(base_model, peft_model_id)
-        >>> merged_model = model.merge_and_unload()
-        ```
-        """
-        return self._unload_and_optionally_merge(
-            progressbar=progressbar, safe_merge=safe_merge, adapter_names=adapter_names
-        )
-
-    def unload(self) -> torch.nn.Module:
-        """
-        Gets back the base model by removing all the hira modules without merging. This gives back the original base
-        model.
-        """
-        return self._unload_and_optionally_merge(merge=False)
