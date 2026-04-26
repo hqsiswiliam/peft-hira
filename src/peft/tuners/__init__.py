@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .adalora import AdaLoraConfig, AdaLoraModel
+from .adamss import AdamssConfig, AdamssModel
 from .adaption_prompt import AdaptionPromptConfig, AdaptionPromptModel
 from .boft import BOFTConfig, BOFTModel
 from .c3a import C3AConfig, C3AModel
@@ -59,6 +60,7 @@ from .pvera import PveraConfig, PveraModel
 from .randlora import RandLoraConfig, RandLoraModel
 from .road import RoadConfig, RoadModel
 from .shira import ShiraConfig, ShiraModel
+from .tinylora import TinyLoraConfig, TinyLoraModel
 from .trainable_tokens import TrainableTokensConfig, TrainableTokensModel
 from .vblora import VBLoRAConfig, VBLoRAModel
 from .vera import VeraConfig, VeraModel
@@ -69,6 +71,8 @@ from .xlora import XLoraConfig, XLoraModel
 __all__ = [
     "AdaLoraConfig",
     "AdaLoraModel",
+    "AdamssConfig",
+    "AdamssModel",
     "AdaptionPromptConfig",
     "AdaptionPromptModel",
     "ArrowConfig",
@@ -139,6 +143,8 @@ __all__ = [
     "RoadModel",
     "ShiraConfig",
     "ShiraModel",
+    "TinyLoraConfig",
+    "TinyLoraModel",
     "TrainableTokensConfig",
     "TrainableTokensModel",
     "VBLoRAConfig",

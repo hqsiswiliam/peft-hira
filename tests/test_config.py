@@ -22,6 +22,7 @@ import pytest
 
 from peft import (
     AdaLoraConfig,
+    AdamssConfig,
     AdaptionPromptConfig,
     BOFTConfig,
     C3AConfig,
@@ -53,6 +54,7 @@ from peft import (
     RoadConfig,
     ShiraConfig,
     TaskType,
+    TinyLoraConfig,
     TrainableTokensConfig,
     VBLoRAConfig,
     VeraConfig,
@@ -65,6 +67,7 @@ PEFT_MODELS_TO_TEST = [("peft-internal-testing/tiny-opt-lora-revision", "test")]
 # Config classes and their mandatory parameters
 ALL_CONFIG_CLASSES = (
     (AdaLoraConfig, {"total_step": 1}),
+    (AdamssConfig, {}),
     (AdaptionPromptConfig, {}),
     (BOFTConfig, {}),
     (C3AConfig, {}),
@@ -90,6 +93,7 @@ ALL_CONFIG_CLASSES = (
     (PeanutConfig, {}),
     (RoadConfig, {}),
     (ShiraConfig, {}),
+    (TinyLoraConfig, {}),
     (TrainableTokensConfig, {}),
     (VeraConfig, {}),
     (VBLoRAConfig, {}),
