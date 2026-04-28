@@ -157,7 +157,7 @@ def train(
     optimizer_kwargs: dict[str, Any],
     query_template: str,
     lr_scheduler_arg: Optional[Literal["cosine"]],
-    warmup_step_ratio: Optional[float],
+    warmup_step_ratio: float,
     use_amp: bool,
     is_adalora: bool,
     init_kv_cache_prefix: Optional[str],
