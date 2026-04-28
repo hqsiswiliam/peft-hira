@@ -280,13 +280,7 @@ class DummyScheduler:
 
 
 def get_optimizer_and_scheduler(
-    model,
-    *,
-    optimizer_type: str,
-    max_steps: int,
-    lr_scheduler_arg: Optional[Literal["cosine"]],
-    warmup_step_ratio: float = WARMUP_STEP_RATIO,
-    **optimizer_kwargs,
+    model, *, optimizer_type: str, max_steps: int, lr_scheduler_arg: Optional[Literal["cosine"]], warmup_step_ratio: float = WARMUP_STEP_RATIO, **optimizer_kwargs
 ) -> tuple[torch.optim.Optimizer, Any]:
     if optimizer_type == "lora+":
         optimizer = create_loraplus_optimizer(model, optimizer_cls=torch.optim.AdamW, **optimizer_kwargs)
