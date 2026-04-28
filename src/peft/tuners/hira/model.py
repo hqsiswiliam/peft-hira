@@ -16,7 +16,6 @@ from __future__ import annotations
 import operator
 from contextlib import contextmanager
 from functools import partial
-from typing import Optional
 
 import torch
 from torch import nn
@@ -132,8 +131,6 @@ class HiraModel(BaseTuner):
         target_name,
         parent,
         current_key,
-        *,
-        parameter_name: Optional[str] = None,
     ) -> None:
         if current_key is None:
             raise ValueError("Current Key shouldn't be `None`")
@@ -149,7 +146,6 @@ class HiraModel(BaseTuner):
             "init_weights": hira_config.init_weights,
             "loaded_in_8bit": getattr(self.model, "is_loaded_in_8bit", False),
             "loaded_in_4bit": getattr(self.model, "is_loaded_in_4bit", False),
-            "parameter_name": parameter_name,
         }
         # for torchao merging, we need the get_apply_tensor_subclass from the quantization config
         try:
