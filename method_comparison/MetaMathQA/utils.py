@@ -64,7 +64,6 @@ RESULT_PATH_TEST = os.path.join(os.path.dirname(__file__), "temporary_results")
 # cancelled results
 RESULT_PATH_CANCELLED = os.path.join(os.path.dirname(__file__), "cancelled_results")
 hf_api = huggingface_hub.HfApi()
-WARMUP_STEP_RATIO = 0.1
 
 
 @dataclass
@@ -87,6 +86,7 @@ class TrainConfig:
         optimizer_type: The name of a torch optimizer (e.g. AdamW) or a PEFT method ("lora+", "lora-fa")
         optimizer_kwargs: The optimizer keyword arguments (lr etc.)
         lr_scheduler: The learning rate scheduler (currently only None or 'cosine' are supported)
+        warmup_step_ratio: Fraction of total steps used for LR warmup (only relevant when lr_scheduler='cosine'), or None to use the default
         use_amp: Whether to use automatic mixed precision
         autocast_adapter_dtype: Whether to cast adapter dtype to float32, same argument as in PEFT
         generation_kwargs: Arguments passed to transformers GenerationConfig (used in evaluation)
@@ -108,6 +108,7 @@ class TrainConfig:
     optimizer_type: str
     optimizer_kwargs: dict[str, Any]
     lr_scheduler: Optional[Literal["cosine"]]
+    warmup_step_ratio: Optional[float]
     use_amp: bool
     autocast_adapter_dtype: bool
     generation_kwargs: dict[str, Any]
@@ -137,6 +138,8 @@ class TrainConfig:
             raise ValueError(f"Invalid optimizer_type: {self.optimizer_type}")
         if self.lr_scheduler not in [None, "cosine"]:
             raise ValueError(f"Invalid lr_scheduler: {self.lr_scheduler}, must be None or 'cosine'")
+        if self.warmup_step_ratio is not None and not (0.0 <= self.warmup_step_ratio < 1.0):
+            raise ValueError(f"Invalid warmup_step_ratio: {self.warmup_step_ratio}, must be in [0, 1)")
         if "{query}" not in self.query_template:
             raise ValueError("Invalid query_template, must contain '{query}'")
 
@@ -176,6 +179,7 @@ def get_train_config(path: str) -> TrainConfig:
             config_kwargs = json.load(f)
 
     config_kwargs = {**default_config_kwargs, **config_kwargs}
+    config_kwargs.setdefault("warmup_step_ratio", None)
     return TrainConfig(**config_kwargs)
 
 
@@ -275,7 +279,13 @@ class DummyScheduler:
 
 
 def get_optimizer_and_scheduler(
-    model, *, optimizer_type: str, max_steps: int, lr_scheduler_arg: Optional[Literal["cosine"]], **optimizer_kwargs
+    model,
+    *,
+    optimizer_type: str,
+    max_steps: int,
+    lr_scheduler_arg: Optional[Literal["cosine"]],
+    warmup_step_ratio: Optional[float] = None,
+    **optimizer_kwargs,
 ) -> tuple[torch.optim.Optimizer, Any]:
     if optimizer_type == "lora+":
         optimizer = create_loraplus_optimizer(model, optimizer_cls=torch.optim.AdamW, **optimizer_kwargs)
@@ -286,7 +296,8 @@ def get_optimizer_and_scheduler(
         optimizer = cls(model.parameters(), **optimizer_kwargs)
 
     if lr_scheduler_arg == "cosine":
-        warmup_steps = int(WARMUP_STEP_RATIO * max_steps)
+        ratio = warmup_step_ratio if warmup_step_ratio is not None else WARMUP_STEP_RATIO
+        warmup_steps = int(ratio * max_steps)
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer, num_warmup_steps=warmup_steps, num_training_steps=max_steps
         )
