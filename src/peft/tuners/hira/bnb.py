@@ -25,6 +25,7 @@ from peft.tuners.tuners_utils import BaseTunerLayer, check_adapters_to_merge
 from peft.utils.integrations import dequantize_bnb_weight
 from peft.utils.other import transpose
 
+from .config import HiraConfig
 from .layer import HiraLayer
 
 
@@ -36,9 +37,8 @@ if is_bnb_available():
             self,
             base_layer: torch.nn.Module,
             adapter_name: str,
+            config: HiraConfig,
             r: int = 0,
-            hira_dropout: float = 0,
-            init_weights: bool = True,
             **kwargs,
         ) -> None:
             super().__init__()
@@ -46,12 +46,7 @@ if is_bnb_available():
             self.fan_in_fan_out = False
 
             self._active_adapter = adapter_name
-            self.update_layer(
-                adapter_name,
-                r,
-                hira_dropout=hira_dropout,
-                init_weights=init_weights,
-            )
+            self.update_layer(adapter_name, r, config=config)
 
         def merge(self, safe_merge: bool = False, adapter_names: Optional[list[str]] = None) -> None:
             """
@@ -236,7 +231,7 @@ if is_bnb_available():
             rep = super().__repr__()
             return "hira." + rep
 
-    def dispatch_bnb_8bit(target: torch.nn.Module, adapter_name: str, **kwargs):
+    def dispatch_bnb_8bit(target: torch.nn.Module, adapter_name: str, hira_config, **kwargs):
         new_module = None
 
         if isinstance(target, BaseTunerLayer):
@@ -254,7 +249,7 @@ if is_bnb_available():
                     "index": target.index,
                 }
             )
-            new_module = Linear8bitLt(target, adapter_name, **eightbit_kwargs)
+            new_module = Linear8bitLt(target, adapter_name, config=hira_config, **eightbit_kwargs)
 
         return new_module
 
@@ -267,9 +262,8 @@ if is_bnb_4bit_available():
             self,
             base_layer: torch.nn.Module,
             adapter_name: str,
+            config: HiraConfig,
             r: int = 0,
-            hira_dropout: float = 0.0,
-            init_weights: bool = True,
             **kwargs,
         ) -> None:
             super().__init__()
@@ -277,12 +271,7 @@ if is_bnb_4bit_available():
             self.fan_in_fan_out = False
 
             self._active_adapter = adapter_name
-            self.update_layer(
-                adapter_name,
-                r,
-                hira_dropout=hira_dropout,
-                init_weights=init_weights,
-            )
+            self.update_layer(adapter_name, r, config=config)
 
         def merge(self, safe_merge: bool = False, adapter_names: Optional[list[str]] = None) -> None:
             """
@@ -461,7 +450,7 @@ if is_bnb_4bit_available():
             rep = super().__repr__()
             return "hira." + rep
 
-    def dispatch_bnb_4bit(target: torch.nn.Module, adapter_name: str, **kwargs):
+    def dispatch_bnb_4bit(target: torch.nn.Module, adapter_name: str, hira_config, **kwargs):
         new_module = None
 
         if isinstance(target, BaseTunerLayer):
@@ -479,6 +468,6 @@ if is_bnb_4bit_available():
                     "quant_type": target_base_layer.weight.quant_type,
                 }
             )
-            new_module = Linear4bit(target, adapter_name, **fourbit_kwargs)
+            new_module = Linear4bit(target, adapter_name, config=hira_config, **fourbit_kwargs)
 
         return new_module

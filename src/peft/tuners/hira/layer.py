@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -84,13 +84,15 @@ class HiraLayer(BaseTunerLayer):
         self,
         adapter_name,
         r,
-        hira_dropout,
-        init_weights,
+        config: HiraConfig,
         **kwargs,
     ):
         # This code works for linear layers, override for other layer types
         if r <= 0:
             raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+
+        hira_dropout = config.hira_dropout
+        init_weights = config.init_weights
 
         self.r[adapter_name] = r
         if hira_dropout > 0.0:
@@ -135,11 +137,10 @@ class Linear(nn.Module, HiraLayer):
         self,
         base_layer,
         adapter_name: str,
+        config: HiraConfig,
         r: int = 0,
-        hira_dropout: float = 0.0,
         fan_in_fan_out: bool = False,  # Set this to True if the layer to replace stores weight like (fan_in, fan_out)
         is_target_conv_1d_layer: bool = False,
-        init_weights: Union[bool, str] = True,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -147,12 +148,7 @@ class Linear(nn.Module, HiraLayer):
         self.fan_in_fan_out = fan_in_fan_out
 
         self._active_adapter = adapter_name
-        self.update_layer(
-            adapter_name,
-            r,
-            hira_dropout=hira_dropout,
-            init_weights=init_weights,
-        )
+        self.update_layer(adapter_name, r, config=config)
         self.is_target_conv_1d_layer = is_target_conv_1d_layer
 
     def merge(self, safe_merge: bool = False, adapter_names: Optional[list[str]] = None) -> None:
@@ -302,10 +298,9 @@ class Embedding(nn.Module, HiraLayer):
         self,
         base_layer: nn.Module,
         adapter_name: str,
+        config: HiraConfig,
         r: int = 0,
-        hira_dropout: float = 0.0,
         fan_in_fan_out: bool = False,  # Set this to True if the layer to replace stores weight like (fan_in, fan_out)
-        init_weights: Union[bool, str] = True,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -313,16 +308,14 @@ class Embedding(nn.Module, HiraLayer):
         self.fan_in_fan_out = fan_in_fan_out
 
         self._active_adapter = adapter_name
-        self.update_layer(
-            adapter_name,
-            r,
-            hira_dropout=hira_dropout,
-            init_weights=init_weights,
-        )
+        self.update_layer(adapter_name, r, config=config)
 
-    def update_layer(self, adapter_name, r, hira_dropout, init_weights, **kwargs) -> None:
+    def update_layer(self, adapter_name, r, config: HiraConfig, **kwargs) -> None:
         if r <= 0:
             raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+
+        hira_dropout = config.hira_dropout
+        init_weights = config.init_weights
 
         self.r[adapter_name] = r
         if hira_dropout > 0.0:
@@ -497,9 +490,8 @@ class _ConvNd(nn.Module, HiraLayer):
         self,
         base_layer: nn.Module,
         adapter_name: str,
+        config: HiraConfig,
         r: int = 0,
-        hira_dropout: float = 0.0,
-        init_weights: Union[bool, str] = True,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -511,16 +503,14 @@ class _ConvNd(nn.Module, HiraLayer):
         self._active_adapter = adapter_name
         self._kernel_dim = base_layer.weight.dim()
 
-        self.update_layer(
-            adapter_name,
-            r,
-            hira_dropout=hira_dropout,
-            init_weights=init_weights,
-        )
+        self.update_layer(adapter_name, r, config=config)
 
-    def update_layer(self, adapter_name, r, hira_dropout, init_weights, **kwargs):
+    def update_layer(self, adapter_name, r, config: HiraConfig, **kwargs):
         if r <= 0:
             raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+
+        hira_dropout = config.hira_dropout
+        init_weights = config.init_weights
 
         self.r[adapter_name] = r
         if hira_dropout > 0.0:
@@ -768,45 +758,36 @@ def dispatch_default(
     else:
         base = target
 
-    # Common HiRA init kwargs
-    module_kwargs = {
-        "r": hira_config.r,
-        "hira_dropout": hira_config.hira_dropout,
-        "init_weights": hira_config.init_weights,
-    }
-    # If fan_in_fan_out present in config, include it
-    if hasattr(hira_config, "fan_in_fan_out"):
-        module_kwargs["fan_in_fan_out"] = hira_config.fan_in_fan_out
+    r = hira_config.r
+    fan_in_fan_out = hira_config.fan_in_fan_out
 
     new_module = None
     # Embedding
     if isinstance(base, nn.Embedding):
-        new_module = Embedding(target, adapter_name, **module_kwargs)
+        new_module = Embedding(target, adapter_name, config=hira_config, r=r)
     # Conv layers
     elif isinstance(base, nn.Conv2d):
-        new_module = Conv2d(target, adapter_name, **module_kwargs)
+        new_module = Conv2d(target, adapter_name, config=hira_config, r=r)
     elif isinstance(base, nn.Conv3d):
-        new_module = Conv3d(target, adapter_name, **module_kwargs)
+        new_module = Conv3d(target, adapter_name, config=hira_config, r=r)
     elif isinstance(base, nn.Conv1d):
-        new_module = Conv1d(target, adapter_name, **module_kwargs)
+        new_module = Conv1d(target, adapter_name, config=hira_config, r=r)
     # Linear layers
     elif isinstance(base, nn.Linear):
         # Linear always uses fan_in_fan_out=False
-        if module_kwargs.get("fan_in_fan_out", False):
+        if fan_in_fan_out:
             warnings.warn(
                 "fan_in_fan_out is set to True but the target module is `torch.nn.Linear`. "
                 "Setting fan_in_fan_out to False."
             )
-            module_kwargs["fan_in_fan_out"] = False
-        new_module = Linear(target, adapter_name, **module_kwargs)
+        new_module = Linear(target, adapter_name, config=hira_config, r=r, fan_in_fan_out=False)
     # HuggingFace Conv1D
     elif isinstance(base, Conv1D):
         # Conv1D expects fan_in_fan_out=True
-        if not module_kwargs.get("fan_in_fan_out", False):
+        if not fan_in_fan_out:
             warnings.warn(
                 "fan_in_fan_out is set to False but the target module is `Conv1D`. Setting fan_in_fan_out to True."
             )
-            module_kwargs["fan_in_fan_out"] = True
-        new_module = Linear(target, adapter_name, is_target_conv_1d_layer=True, **module_kwargs)
+        new_module = Linear(target, adapter_name, config=hira_config, r=r, fan_in_fan_out=True, is_target_conv_1d_layer=True)
 
     return new_module

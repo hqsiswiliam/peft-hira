@@ -141,9 +141,7 @@ class HiraModel(BaseTuner):
 
         kwargs = {
             "r": r,
-            "hira_dropout": hira_config.hira_dropout,
             "fan_in_fan_out": hira_config.fan_in_fan_out,
-            "init_weights": hira_config.init_weights,
             "loaded_in_8bit": getattr(self.model, "is_loaded_in_8bit", False),
             "loaded_in_4bit": getattr(self.model, "is_loaded_in_4bit", False),
         }
@@ -156,12 +154,7 @@ class HiraModel(BaseTuner):
             pass
 
         if isinstance(target, HiraLayer):
-            target.update_layer(
-                adapter_name,
-                r,
-                hira_dropout=hira_config.hira_dropout,
-                init_weights=hira_config.init_weights,
-            )
+            target.update_layer(adapter_name, r, config=hira_config)
         else:
             device_map = self.model.hf_device_map if hasattr(self.model, "hf_device_map") else None
             new_module = self._create_new_module(hira_config, adapter_name, target, device_map=device_map, **kwargs)
