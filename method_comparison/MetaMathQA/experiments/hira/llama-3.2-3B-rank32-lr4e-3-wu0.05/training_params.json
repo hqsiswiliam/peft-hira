@@ -1,0 +1,11 @@
+{
+  "optimizer_kwargs": {
+<<<<<<<< HEAD:method_comparison/MetaMathQA/experiments/hira/llama-3.2-3B-rank32-lr4.5e-3/training_params.json
+    "lr": 4.5e-3,
+========
+    "lr": 4e-3,
+>>>>>>>> 8dcdb2e8 (Add configurable warmup_step_ratio and HiRA lr4e-3 wu0.05 experiment):method_comparison/MetaMathQA/experiments/hira/llama-3.2-3B-rank32-lr4e-3-wu0.05/training_params.json
+    "weight_decay": 0.0
+  },
+  "warmup_step_ratio": 0.05
+}
