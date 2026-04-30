@@ -1,8 +1,0 @@
-{
-  "optimizer_kwargs": {
-    "lr": 4e-3,
-    "weight_decay": 0.0
-  },
-  "warmup_step_ratio": 0.05,
-  "use_gc": true
-}

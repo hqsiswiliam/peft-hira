@@ -157,7 +157,6 @@ def train(
     optimizer_kwargs: dict[str, Any],
     query_template: str,
     lr_scheduler_arg: Optional[Literal["cosine"]],
-    warmup_step_ratio: float,
     use_amp: bool,
     is_adalora: bool,
     init_kv_cache_prefix: Optional[str],
@@ -186,7 +185,6 @@ def train(
         optimizer_type=optimizer_type,
         max_steps=max_steps,
         lr_scheduler_arg=lr_scheduler_arg,
-        warmup_step_ratio=warmup_step_ratio,
         **optimizer_kwargs,
     )
 
@@ -463,7 +461,6 @@ def main(*, path_experiment: str, experiment_name: str, clean: bool, bucket_name
         optimizer_kwargs=train_config.optimizer_kwargs,
         query_template=train_config.query_template,
         lr_scheduler_arg=train_config.lr_scheduler,
-        warmup_step_ratio=train_config.warmup_step_ratio,
         use_amp=train_config.use_amp,
         is_adalora=isinstance(peft_config, AdaLoraConfig),
         init_kv_cache_prefix=train_config.init_kv_cache_prefix,
